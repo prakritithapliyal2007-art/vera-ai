@@ -1,20 +1,18 @@
-import Groq from "groq-sdk";
+import { streamText } from "ai";
+import { AI_MODEL, SYSTEM_PROMPT } from "@/lib/ai-config";
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-// Helper: uploaded File ko base64 data URI mein convert karta hai
+// Helper: uploaded image ko base64 data URI mein convert karta hai
 async function fileToBase64DataUri(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const base64 = Buffer.from(arrayBuffer).toString("base64");
   const mimeType = file.type || "image/jpeg";
+
   return `data:${mimeType};base64,${base64}`;
 }
 
 export async function POST(request: Request) {
   try {
-    // Frontend FormData bhejta hai, JSON nahi — isliye formData() use karo
+    // Frontend FormData bhejta hai, JSON nahi
     const formData = await request.formData();
 
     const messagesRaw = formData.get("messages");
@@ -34,8 +32,8 @@ export async function POST(request: Request) {
 
     const finalMessages = [...messages];
 
+    // Agar image upload hui hai, use last user message ke saath attach karo
     if (isImage) {
-      // Image ko last user message ke saath attach karo
       const base64Image = await fileToBase64DataUri(file);
 
       const lastMessage = finalMessages[finalMessages.length - 1];
@@ -43,63 +41,34 @@ export async function POST(request: Request) {
       finalMessages[finalMessages.length - 1] = {
         role: "user",
         content: [
-          { type: "text", text: lastMessage?.content || "Please analyze this image." },
-          { type: "image_url", image_url: { url: base64Image } },
+          {
+            type: "text",
+            text: lastMessage?.content || "Please analyze this image.",
+          },
+          {
+            type: "image",
+            image: base64Image,
+            mediaType: file.type || "image/jpeg",
+          },
         ],
       };
     }
 
-    // Image ho to vision model, warna normal text model
-    const model = isImage ? "qwen/qwen3.6-27b" : "openai/gpt-oss-120b";
-
-    const completion = await groq.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are NOVA, a helpful personal AI assistant. Give clear, accurate, friendly and useful answers.",
-        },
-        ...finalMessages,
-      ],
-      temperature: 0.7,
-      stream: true,
+    // Claude model
+    const result = streamText({
+      model: AI_MODEL,
+      system: SYSTEM_PROMPT,
+      messages: finalMessages,
     });
 
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of completion) {
-            const text = chunk.choices[0]?.delta?.content || "";
-
-            if (text) {
-              controller.enqueue(encoder.encode(text));
-            }
-          }
-
-          controller.close();
-        } catch (error) {
-          console.error("Streaming error:", error);
-          controller.error(error);
-        }
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-      },
-    });
+    // AI SDK ka built-in streaming response
+    return result.toTextStreamResponse();
   } catch (error) {
     console.error("VERA AI Error:", error);
 
     return new Response(
       JSON.stringify({
-        error: "Something went wrong with NOVA.",
+        error: "Something went wrong with VERA.",
       }),
       {
         status: 500,
